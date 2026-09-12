@@ -79,6 +79,18 @@ public:
 	uint64_t oldest() const;
 	bool read(uint64_t seq, FrameMeta &meta, const uint8_t *planes[MAX_AV_PLANES]) const;
 
+	/* Sequence of the first frame recorded after the most recent pause, 0 if there was none. */
+	uint64_t gap_seq() const { return gap_seq_.load(std::memory_order_acquire); }
+
+	bool timestamp_at(uint64_t seq, uint64_t &timestamp) const;
+
+	/*
+	 * Newest frame whose timestamp is <= the one asked for, searched within [lo, hi]. Frames are
+	 * stored in timestamp order by construction, so a binary search is safe — and unlike counting
+	 * frames it survives dropped frames and frame rate decimation.
+	 */
+	bool find_by_timestamp(uint64_t timestamp, uint64_t lo, uint64_t hi, uint64_t &seq) const;
+
 	uint64_t capacity() const { return capacity_; }
 	uint64_t bytes_allocated() const { return bytes_allocated_; }
 	const RingConfig &config() const { return config_; }
@@ -103,6 +115,7 @@ private:
 	uint64_t bytes_allocated_ = 0;
 
 	std::atomic<uint64_t> head_{0};
+	std::atomic<uint64_t> gap_seq_{0};
 };
 
 /* Number of planes and their row counts for the formats the plugin supports. */

@@ -18,7 +18,14 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 
 #pragma once
 
+#include "core/playback-engine.hpp"
+
+#include <obs.h>
+
 #include <QWidget>
+
+#include <utility>
+#include <vector>
 
 class QButtonGroup;
 class QCheckBox;
@@ -40,11 +47,16 @@ public:
 	explicit ReplayDock(QWidget *parent = nullptr);
 	~ReplayDock() override;
 
-private slots:
+public slots:
+	/* Invoked from hotkey callbacks, which do not run on the Qt thread. */
 	void onMark();
 	void onPlay();
 	void onStop();
+	void cycleSpeed();
+
+private slots:
 	void onSpeedChanged(int speed_percent);
+	void onEventActivated();
 	void refreshStatus();
 
 private:
@@ -74,5 +86,20 @@ private:
 
 	QTimer *status_timer = nullptr;
 
+	/* Marked clips, in the order they were created; the list widget stores indices into this. */
+	std::vector<Clip> events;
 	int speed_percent = 100;
+
+	bool play(int event_index);
+	int selectedEvent() const;
+
+	void registerHotkeys();
+	void unregisterHotkeys();
+
+public:
+	/* Hotkey bindings live in the profile config, so they have to be re-read on a profile switch. */
+	void reloadHotkeyBindings();
+
+private:
+	std::vector<std::pair<obs_hotkey_id, const char *>> hotkeys;
 };

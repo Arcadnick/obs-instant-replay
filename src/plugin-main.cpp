@@ -23,6 +23,8 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #include <QMainWindow>
 
 #include "core/program-capture.hpp"
+#include "core/replay-director.hpp"
+#include "core/replay-source.hpp"
 #include "ui/replay-dock.hpp"
 
 OBS_DECLARE_MODULE()
@@ -61,9 +63,18 @@ static void on_frontend_event(enum obs_frontend_event event, void *)
 			ProgramCapture::instance().stop();
 			start_capture();
 		}
+		/* Hotkey bindings are stored per profile. */
+		if (dock_widget)
+			dock_widget->reloadHotkeyBindings();
+		break;
+	case OBS_FRONTEND_EVENT_SCENE_COLLECTION_CHANGING:
+	case OBS_FRONTEND_EVENT_SCENE_COLLECTION_CLEANUP:
+		/* The replay scene belongs to the collection that is going away. */
+		ReplayDirector::instance().reset();
 		break;
 	case OBS_FRONTEND_EVENT_EXIT:
 		/* Drop the raw callback before libobs starts tearing the video pipeline down. */
+		ReplayDirector::instance().reset();
 		ProgramCapture::instance().stop();
 		break;
 	default:
@@ -78,6 +89,8 @@ bool obs_module_load(void)
 	 * restoreState() *after* loadAppModules(), so a dock added later (e.g. on
 	 * OBS_FRONTEND_EVENT_FINISHED_LOADING) comes back floating on every start.
 	 */
+	register_replay_source();
+
 	auto *main_window = static_cast<QMainWindow *>(obs_frontend_get_main_window());
 	if (!main_window) {
 		obs_log(LOG_WARNING, "no frontend main window, dock not registered");
@@ -102,6 +115,7 @@ bool obs_module_load(void)
 void obs_module_unload(void)
 {
 	obs_frontend_remove_event_callback(on_frontend_event, nullptr);
+	ReplayDirector::instance().reset();
 	ProgramCapture::instance().stop();
 
 	if (dock_widget) {

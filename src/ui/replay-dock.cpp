@@ -18,11 +18,16 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 
 #include "replay-dock.hpp"
 
+#include "core/playback-engine.hpp"
 #include "core/program-capture.hpp"
+#include "core/replay-director.hpp"
 
+#include <obs-frontend-api.h>
 #include <obs-module.h>
 #include <plugin-support.h>
+#include <util/config-file.h>
 
+#include <QAbstractButton>
 #include <QButtonGroup>
 #include <QCheckBox>
 #include <QDoubleSpinBox>
@@ -35,6 +40,7 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #include <QProgressBar>
 #include <QPushButton>
 #include <QTimer>
+#include <QTime>
 #include <QVBoxLayout>
 
 #include <algorithm>
@@ -73,12 +79,109 @@ ReplayDock::ReplayDock(QWidget *parent) : QWidget(parent)
 
 	setMinimumWidth(320);
 
+	registerHotkeys();
+
 	status_timer = new QTimer(this);
 	connect(status_timer, &QTimer::timeout, this, &ReplayDock::refreshStatus);
 	status_timer->start(kStatusIntervalMs);
 }
 
-ReplayDock::~ReplayDock() = default;
+ReplayDock::~ReplayDock()
+{
+	unregisterHotkeys();
+}
+
+namespace {
+
+/*
+ * OBS saves plugin hotkey bindings itself (profile config, [Hotkeys] section) but only loads its
+ * own, so the bindings have to be read back by hand.
+ */
+void load_binding(obs_hotkey_id id, const char *name)
+{
+	config_t *profile = obs_frontend_get_profile_config();
+	if (!profile)
+		return;
+
+	const char *json = config_get_string(profile, "Hotkeys", name);
+	if (!json)
+		return;
+
+	obs_data_t *data = obs_data_create_from_json(json);
+	if (!data)
+		return;
+
+	obs_data_array_t *bindings = obs_data_get_array(data, "bindings");
+	if (bindings) {
+		obs_hotkey_load(id, bindings);
+		obs_data_array_release(bindings);
+	}
+	obs_data_release(data);
+}
+
+struct HotkeyTarget {
+	ReplayDock *dock;
+	const char *slot;
+};
+
+void hotkey_pressed(void *data, obs_hotkey_id, obs_hotkey_t *, bool pressed)
+{
+	if (!pressed)
+		return;
+
+	/* Hotkey callbacks run off the Qt thread: never touch widgets from here. */
+	auto *target = static_cast<HotkeyTarget *>(data);
+	QMetaObject::invokeMethod(target->dock, target->slot, Qt::QueuedConnection);
+}
+
+} // namespace
+
+void ReplayDock::registerHotkeys()
+{
+	static HotkeyTarget targets[] = {
+		{nullptr, "onMark"},
+		{nullptr, "onPlay"},
+		{nullptr, "onStop"},
+		{nullptr, "cycleSpeed"},
+	};
+	static const char *names[] = {
+		"instant_replay.mark",
+		"instant_replay.play_last",
+		"instant_replay.stop",
+		"instant_replay.speed_cycle",
+	};
+	static const char *descriptions[] = {
+		"Replay.Hotkey.Mark",
+		"Replay.Hotkey.Play",
+		"Replay.Hotkey.Stop",
+		"Replay.Hotkey.SpeedCycle",
+	};
+
+	for (size_t i = 0; i < sizeof(targets) / sizeof(targets[0]); ++i) {
+		targets[i].dock = this;
+		const obs_hotkey_id id = obs_hotkey_register_frontend(names[i], obs_module_text(descriptions[i]),
+								      hotkey_pressed, &targets[i]);
+		if (id == OBS_INVALID_HOTKEY_ID)
+			continue;
+
+		load_binding(id, names[i]);
+		hotkeys.emplace_back(id, names[i]);
+	}
+}
+
+void ReplayDock::unregisterHotkeys()
+{
+	for (const auto &entry : hotkeys)
+		obs_hotkey_unregister(entry.first);
+
+	hotkeys.clear();
+}
+
+void ReplayDock::reloadHotkeyBindings()
+{
+	for (const auto &entry : hotkeys)
+		load_binding(entry.first, entry.second);
+}
 
 QWidget *ReplayDock::buildStatusRow()
 {
@@ -130,13 +233,13 @@ QWidget *ReplayDock::buildCaptureRow()
 	length_spin = new QDoubleSpinBox(box);
 	length_spin->setRange(1.0, 30.0);
 	length_spin->setSingleStep(0.5);
-	length_spin->setValue(6.0);
+	length_spin->setValue(10.0);
 	length_spin->setSuffix(QStringLiteral(" s"));
 
 	offset_spin = new QDoubleSpinBox(box);
 	offset_spin->setRange(0.0, 30.0);
 	offset_spin->setSingleStep(0.5);
-	offset_spin->setValue(4.0);
+	offset_spin->setValue(0.0);
 	offset_spin->setSuffix(QStringLiteral(" s"));
 
 	form->addRow(obs_module_text("Replay.Length"), length_spin);
@@ -177,6 +280,7 @@ QWidget *ReplayDock::buildEventsBox()
 
 	events_list = new QListWidget(box);
 	events_list->setAlternatingRowColors(true);
+	connect(events_list, &QListWidget::itemDoubleClicked, this, &ReplayDock::onEventActivated);
 	layout->addWidget(events_list);
 
 	auto *hint = new QLabel(obs_module_text("Replay.Events.Hint"), box);
@@ -214,29 +318,98 @@ QWidget *ReplayDock::buildTransportRow()
 
 void ReplayDock::onMark()
 {
-	/* M3 wires this to the ring buffer; for now it only proves the UI plumbing works. */
-	obs_log(LOG_INFO, "MARK requested (length %.1f s, offset %.1f s)", length_spin->value(), offset_spin->value());
+	Clip clip;
+	std::string error;
+	if (!PlaybackEngine::instance().mark(length_spin->value(), offset_spin->value(), clip, error)) {
+		obs_log(LOG_WARNING, "MARK failed: %s", error.c_str());
+		format_label->setText(QString::fromStdString(error));
+		return;
+	}
+
+	events.push_back(clip);
+
+	auto *item = new QListWidgetItem(QStringLiteral("%1 %2   %3   %4 s")
+						 .arg(obs_module_text("Replay.Event"))
+						 .arg(events.size())
+						 .arg(QTime::currentTime().toString(QStringLiteral("HH:mm:ss")))
+						 .arg(clip.duration_sec(), 0, 'f', 1));
+	item->setData(Qt::UserRole, static_cast<int>(events.size()) - 1);
+	events_list->addItem(item);
+	events_list->setCurrentItem(item);
+
+	obs_log(LOG_INFO, "marked clip %.1f s (%llu frames)", clip.duration_sec(),
+		static_cast<unsigned long long>(clip.seq_out - clip.seq_in));
+}
+
+int ReplayDock::selectedEvent() const
+{
+	const QListWidgetItem *item = events_list->currentItem();
+	if (!item)
+		return events.empty() ? -1 : static_cast<int>(events.size()) - 1;
+
+	return item->data(Qt::UserRole).toInt();
+}
+
+bool ReplayDock::play(int event_index)
+{
+	if (event_index < 0 || event_index >= static_cast<int>(events.size()))
+		return false;
+
+	if (!ReplayDirector::instance().play_to_program(events[static_cast<size_t>(event_index)], speed_percent / 100.0,
+							auto_return_check->isChecked())) {
+		obs_log(LOG_WARNING, "PLAY failed: clip is no longer valid");
+		return false;
+	}
+
+	obs_log(LOG_INFO, "playing clip %d at %d%%", event_index + 1, speed_percent);
+	return true;
 }
 
 void ReplayDock::onPlay()
 {
-	obs_log(LOG_INFO, "PLAY requested at %d%%", speed_percent);
+	play(selectedEvent());
+}
+
+void ReplayDock::onEventActivated()
+{
+	play(selectedEvent());
 }
 
 void ReplayDock::onStop()
 {
-	obs_log(LOG_INFO, "STOP requested");
+	ReplayDirector::instance().stop();
+	obs_log(LOG_INFO, "playback stopped");
+}
+
+void ReplayDock::cycleSpeed()
+{
+	const int order[] = {25, 50, 75, 100};
+	int next = order[0];
+	for (size_t i = 0; i < sizeof(order) / sizeof(order[0]); ++i) {
+		if (order[i] == speed_percent) {
+			next = order[(i + 1) % (sizeof(order) / sizeof(order[0]))];
+			break;
+		}
+	}
+
+	if (QAbstractButton *button = speed_group->button(next))
+		button->setChecked(true);
+
+	onSpeedChanged(next);
 }
 
 void ReplayDock::onSpeedChanged(int percent)
 {
 	speed_percent = percent;
-	obs_log(LOG_INFO, "speed set to %d%%", percent);
+
+	/* Changing speed mid-playback is the whole point of the panel, so apply it right away. */
+	PlaybackEngine::instance().set_speed(percent / 100.0);
 }
 
 void ReplayDock::refreshStatus()
 {
 	ProgramCapture::instance().poll_video_settings();
+	ReplayDirector::instance().poll();
 
 	const CaptureStatus status = ProgramCapture::instance().status();
 
@@ -247,6 +420,10 @@ void ReplayDock::refreshStatus()
 							   : QString::fromStdString(status.error));
 		return;
 	}
+
+	PlaybackEngine &playback = PlaybackEngine::instance();
+	const bool replaying = playback.playing();
+	onair_label->setText(replaying ? obs_module_text("Replay.OnAir.Replay") : obs_module_text("Replay.OnAir.Live"));
 
 	const double capacity = status.capacity_sec > 0.0 ? status.capacity_sec : 1.0;
 	const double filled = std::min(status.buffered_sec, capacity);
@@ -266,6 +443,14 @@ void ReplayDock::refreshStatus()
 			   .arg(obs_module_text("Replay.Status.Copy"))
 			   .arg(status.copy_ms_avg, 0, 'f', 2)
 			   .arg(status.copy_ms_max, 0, 'f', 2);
+
+	if (replaying) {
+		const Clip clip = playback.clip();
+		details += QStringLiteral("   ▶ %1 / %2 s  %3%")
+				   .arg(playback.position_sec(), 0, 'f', 1)
+				   .arg(clip.duration_sec(), 0, 'f', 1)
+				   .arg(playback.speed() * 100.0, 0, 'f', 0);
+	}
 
 	if (status.slow_frames > 0)
 		details += QStringLiteral("   ⚠ %1: %2")

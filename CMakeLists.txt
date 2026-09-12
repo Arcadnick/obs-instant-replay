@@ -40,8 +40,14 @@ target_sources(
   PRIVATE
     src/core/frame-ring.cpp
     src/core/frame-ring.hpp
+    src/core/playback-engine.cpp
+    src/core/playback-engine.hpp
     src/core/program-capture.cpp
     src/core/program-capture.hpp
+    src/core/replay-director.cpp
+    src/core/replay-director.hpp
+    src/core/replay-source.cpp
+    src/core/replay-source.hpp
     src/plugin-main.cpp
     src/ui/replay-dock.cpp
     src/ui/replay-dock.hpp

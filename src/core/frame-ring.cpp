@@ -91,6 +91,7 @@ void FrameRing::release()
 	slots_per_chunk_ = 0;
 	plane_count_ = 0;
 	head_.store(0, std::memory_order_release);
+	gap_seq_.store(0, std::memory_order_release);
 	config_ = RingConfig{};
 }
 
@@ -199,6 +200,9 @@ void FrameRing::write(const uint8_t *const source[MAX_AV_PLANES], const uint32_t
 	for (size_t plane = 0; plane < MAX_AV_PLANES; ++plane)
 		meta.linesize[plane] = config_.linesize[plane];
 
+	if (starts_gap)
+		gap_seq_.store(seq, std::memory_order_release);
+
 	/* Publish: everything above must be visible to consumers that observe the new head. */
 	head_.store(seq + 1, std::memory_order_release);
 }
@@ -224,6 +228,60 @@ bool FrameRing::read(uint64_t seq, FrameMeta &meta, const uint8_t *planes[MAX_AV
 	for (size_t plane = 0; plane < MAX_AV_PLANES; ++plane)
 		planes[plane] = plane < plane_count_ ? base + plane_offset_[plane] : nullptr;
 
+	return true;
+}
+
+bool FrameRing::timestamp_at(uint64_t seq, uint64_t &timestamp) const
+{
+	if (capacity_ == 0 || seq >= head() || seq < oldest())
+		return false;
+
+	const FrameMeta &meta = meta_[static_cast<size_t>(seq % capacity_)];
+	if (meta.seq != seq)
+		return false;
+
+	timestamp = meta.timestamp;
+	return true;
+}
+
+bool FrameRing::find_by_timestamp(uint64_t timestamp, uint64_t lo, uint64_t hi, uint64_t &seq) const
+{
+	if (capacity_ == 0 || hi < lo)
+		return false;
+
+	const uint64_t first = oldest();
+	const uint64_t last = head();
+	if (last == 0)
+		return false;
+
+	lo = std::max(lo, first);
+	hi = std::min(hi, last - 1);
+	if (hi < lo)
+		return false;
+
+	uint64_t low = lo;
+	uint64_t high = hi;
+	uint64_t found = lo;
+
+	while (low <= high) {
+		const uint64_t middle = low + (high - low) / 2;
+		uint64_t middle_ts = 0;
+		if (!timestamp_at(middle, middle_ts))
+			return false;
+
+		if (middle_ts <= timestamp) {
+			found = middle;
+			if (middle == hi)
+				break;
+			low = middle + 1;
+		} else {
+			if (middle == lo)
+				break;
+			high = middle - 1;
+		}
+	}
+
+	seq = found;
 	return true;
 }
 
