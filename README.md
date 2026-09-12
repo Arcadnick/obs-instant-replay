@@ -16,10 +16,12 @@
 
 ## Совместимость
 
-Плагин собирается против **OBS 30.2.3 + Qt 6.6.3** (obs-deps `2024-05-08`). libobs отвергает модули,
-собранные новее рантайма, поэтому сборка под 30.2.3 грузится и в OBS 30.2, и в 31.x, и в 32.x.
-Поднимать версию SDK в `buildspec.json` можно только осознанно — это поднимет и минимальную версию
-OBS у пользователей.
+Плагин собирается против **OBS 32.2.2 + Qt 6.11.1** (obs-deps `2026-07-15`) — ровно та версия,
+что стоит на эфирной машине. libobs сравнивает major.minor и отвергает модули, собранные новее
+рантайма, поэтому **минимальная версия OBS — 32.2**. На 30.x и 31.x плагин не загрузится; если
+понадобится поддержка более старых OBS, нужно понижать пин `obs-studio` в `buildspec.json`
+(и тогда шаблон потребует правки: его аргумент `-A x64,version=...` исходники OBS 30.2.3 не
+понимают).
 
 ## Сборка
 
@@ -39,28 +41,24 @@ C:\ProgramData\obs-studio\plugins\instant-replay-for-obs\data\locale\en-US.ini
 
 ### macOS (разработка)
 
-Требуются **CMake ≥ 3.30** и **полный Xcode 16+**: и шаблон плагина, и исходники OBS 30.2.3 на
-macOS принудительно требуют генератор Xcode (`cmake/macos/compilerconfig.cmake`), Command Line Tools
-недостаточно.
+Полноценная локальная сборка на macOS требует **полного Xcode 16+**: и шаблон плагина, и исходники
+OBS принудительно требуют генератор Xcode (`cmake/macos/compilerconfig.cmake`), Command Line Tools
+недостаточно. Сборки под macOS в CI отключены — продакшен-платформа одна, Windows.
+
+Без Xcode доступна быстрая проверка синтаксиса: она компилирует исходники с `-fsyntax-only`
+против зафиксированных в `buildspec.json` заголовков OBS и фреймворков Qt.
 
 ```sh
-brew install cmake
-xcode-select --switch /Applications/Xcode.app     # после установки Xcode
-
-cmake --preset macos                              # качает зависимости в ./.deps и собирает libobs
-cmake --build --preset macos
-
-rsync -a --delete build_macos/RelWithDebInfo/instant-replay-for-obs.plugin \
-      ~/Library/"Application Support"/obs-studio/plugins/
+build-aux/syntax-check.sh
 ```
 
-Первый `cmake --preset macos` скачивает obs-deps, Qt6 и исходники OBS 30.2.3 и собирает из них
-libobs и obs-frontend-api — это занимает заметное время, дальше кэшируется в `.deps`.
+Форматирование — как в OBS (`clang-format-19` и `gersemi` из `obsproject/tools`):
 
-Отладчик к релизному OBS.app не подключается (hardened runtime без `get-task-allow`) — рабочий
-инструмент диагностики это `obs_log()` и Help → Log Files → View Current Log. Запуск
-`/Applications/OBS.app/Contents/MacOS/OBS --safe-mode` отключает сторонние плагины и помогает
-отделить свой сбой от чужого.
+```sh
+brew install obsproject/tools/clang-format@19 obsproject/tools/gersemi
+zsh build-aux/run-clang-format
+zsh build-aux/run-gersemi
+```
 
 ## Дорожная карта
 
