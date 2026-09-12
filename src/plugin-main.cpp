@@ -22,6 +22,7 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 
 #include <QMainWindow>
 
+#include "core/plugin-settings.hpp"
 #include "core/program-capture.hpp"
 #include "core/replay-director.hpp"
 #include "core/replay-source.hpp"
@@ -41,9 +42,11 @@ static ReplayDock *dock_widget = nullptr;
 
 static void start_capture()
 {
+	const PluginSettings &saved = PluginSettings::instance();
+
 	CaptureSettings settings;
-	settings.duration_sec = 10.0;
-	settings.frame_rate_divisor = 1;
+	settings.duration_sec = saved.buffer_seconds;
+	settings.frame_rate_divisor = saved.frame_rate_divisor;
 	settings.max_bytes = 0; /* derived from free physical memory */
 
 	if (!ProgramCapture::instance().start(settings))
@@ -74,6 +77,7 @@ static void on_frontend_event(enum obs_frontend_event event, void *)
 		ReplayDirector::instance().reset();
 		break;
 	case OBS_FRONTEND_EVENT_EXIT:
+		PluginSettings::instance().save();
 		/* Drop the raw callback before libobs starts tearing the video pipeline down. */
 		ReplayDirector::instance().reset();
 		ProgramCapture::instance().stop();
@@ -90,6 +94,8 @@ bool obs_module_load(void)
 	 * restoreState() *after* loadAppModules(), so a dock added later (e.g. on
 	 * OBS_FRONTEND_EVENT_FINISHED_LOADING) comes back floating on every start.
 	 */
+	PluginSettings::instance().load();
+
 	register_replay_source();
 
 	auto *main_window = static_cast<QMainWindow *>(obs_frontend_get_main_window());

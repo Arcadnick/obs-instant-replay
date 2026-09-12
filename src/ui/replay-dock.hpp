@@ -61,6 +61,8 @@ private slots:
 	void onEventSelected();
 	void onTimelineChanged(double in_sec, double out_sec);
 	void onEventsContextMenu(const QPoint &position);
+	void onSettingsChanged();
+	void applyBufferSetting();
 	void renameSelectedEvent();
 	void deleteSelectedEvent();
 	void refreshStatus();
@@ -82,6 +84,7 @@ private:
 	/* capture settings */
 	QDoubleSpinBox *length_spin = nullptr;
 	QDoubleSpinBox *offset_spin = nullptr;
+	QDoubleSpinBox *buffer_spin = nullptr;
 
 	/* transport */
 	QButtonGroup *speed_group = nullptr;
@@ -94,6 +97,7 @@ private:
 	QLabel *timeline_label = nullptr;
 
 	QTimer *status_timer = nullptr;
+	QTimer *save_timer = nullptr;
 
 	struct Event {
 		Clip clip;

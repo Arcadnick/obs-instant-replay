@@ -42,6 +42,8 @@ target_sources(
     src/core/frame-ring.hpp
     src/core/playback-engine.cpp
     src/core/playback-engine.hpp
+    src/core/plugin-settings.cpp
+    src/core/plugin-settings.hpp
     src/core/program-capture.cpp
     src/core/program-capture.hpp
     src/core/replay-director.cpp

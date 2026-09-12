@@ -21,6 +21,7 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #include "replay-timeline.hpp"
 
 #include "core/playback-engine.hpp"
+#include "core/plugin-settings.hpp"
 #include "core/program-capture.hpp"
 #include "core/replay-director.hpp"
 
@@ -102,6 +103,12 @@ ReplayDock::ReplayDock(QWidget *parent) : QWidget(parent)
 	status_timer = new QTimer(this);
 	connect(status_timer, &QTimer::timeout, this, &ReplayDock::refreshStatus);
 	status_timer->start(kStatusIntervalMs);
+
+	/* Writing the config on every spinbox step would hit the disk far too often. */
+	save_timer = new QTimer(this);
+	save_timer->setSingleShot(true);
+	save_timer->setInterval(1000);
+	connect(save_timer, &QTimer::timeout, this, [] { PluginSettings::instance().save(); });
 }
 
 ReplayDock::~ReplayDock()
@@ -251,17 +258,30 @@ QWidget *ReplayDock::buildCaptureRow()
 	length_spin = new QDoubleSpinBox(box);
 	length_spin->setRange(1.0, 30.0);
 	length_spin->setSingleStep(0.5);
-	length_spin->setValue(10.0);
+	length_spin->setValue(PluginSettings::instance().clip_length_sec);
 	length_spin->setSuffix(QStringLiteral(" s"));
 
 	offset_spin = new QDoubleSpinBox(box);
 	offset_spin->setRange(0.0, 30.0);
 	offset_spin->setSingleStep(0.5);
-	offset_spin->setValue(0.0);
+	offset_spin->setValue(PluginSettings::instance().clip_trim_sec);
 	offset_spin->setSuffix(QStringLiteral(" s"));
+
+	/* How much footage the ring keeps; changing it reallocates, so it is applied on commit. */
+	buffer_spin = new QDoubleSpinBox(box);
+	buffer_spin->setRange(3.0, 60.0);
+	buffer_spin->setSingleStep(1.0);
+	buffer_spin->setValue(PluginSettings::instance().buffer_seconds);
+	buffer_spin->setSuffix(QStringLiteral(" s"));
+	buffer_spin->setKeyboardTracking(false);
 
 	form->addRow(obs_module_text("Replay.Length"), length_spin);
 	form->addRow(obs_module_text("Replay.Offset"), offset_spin);
+	form->addRow(obs_module_text("Replay.BufferLength"), buffer_spin);
+
+	connect(length_spin, &QDoubleSpinBox::valueChanged, this, &ReplayDock::onSettingsChanged);
+	connect(offset_spin, &QDoubleSpinBox::valueChanged, this, &ReplayDock::onSettingsChanged);
+	connect(buffer_spin, &QDoubleSpinBox::valueChanged, this, &ReplayDock::applyBufferSetting);
 
 	row->addWidget(mark_button, 1);
 	row->addLayout(form, 1);
@@ -275,13 +295,14 @@ QWidget *ReplayDock::buildSpeedRow()
 	row->setContentsMargins(0, 0, 0, 0);
 	row->addWidget(new QLabel(obs_module_text("Replay.Speed"), box));
 
+	speed_percent = PluginSettings::instance().speed_percent;
 	speed_group = new QButtonGroup(this);
 	speed_group->setExclusive(true);
 
 	for (int speed : kSpeeds) {
 		auto *button = new QPushButton(QStringLiteral("%1%").arg(speed), box);
 		button->setCheckable(true);
-		button->setChecked(speed == 100);
+		button->setChecked(speed == PluginSettings::instance().speed_percent);
 		speed_group->addButton(button, speed);
 		row->addWidget(button, 1);
 	}
@@ -348,7 +369,8 @@ QWidget *ReplayDock::buildTransportRow()
 	row->addWidget(stop_button, 1);
 
 	auto_return_check = new QCheckBox(obs_module_text("Replay.AutoReturn"), box);
-	auto_return_check->setChecked(true);
+	auto_return_check->setChecked(PluginSettings::instance().auto_return);
+	connect(auto_return_check, &QCheckBox::toggled, this, &ReplayDock::onSettingsChanged);
 
 	outer->addLayout(row);
 	outer->addWidget(auto_return_check);
@@ -571,9 +593,42 @@ void ReplayDock::cycleSpeed()
 	onSpeedChanged(next);
 }
 
+void ReplayDock::onSettingsChanged()
+{
+	PluginSettings &settings = PluginSettings::instance();
+	settings.clip_length_sec = length_spin->value();
+	settings.clip_trim_sec = offset_spin->value();
+	settings.speed_percent = speed_percent;
+	settings.auto_return = auto_return_check->isChecked();
+	save_timer->start();
+}
+
+void ReplayDock::applyBufferSetting()
+{
+	PluginSettings &settings = PluginSettings::instance();
+	settings.buffer_seconds = buffer_spin->value();
+	save_timer->start();
+
+	if (!ProgramCapture::instance().running())
+		return;
+
+	/* Reallocating the ring throws away everything buffered so far, including marked clips. */
+	ReplayDirector::instance().reset();
+	events.clear();
+	rebuildEventList();
+	showSelection(-1);
+
+	CaptureSettings capture = ProgramCapture::instance().settings();
+	capture.duration_sec = settings.buffer_seconds;
+	ProgramCapture::instance().stop();
+	if (!ProgramCapture::instance().start(capture))
+		obs_log(LOG_WARNING, "could not restart the buffer with %.1f s", settings.buffer_seconds);
+}
+
 void ReplayDock::onSpeedChanged(int percent)
 {
 	speed_percent = percent;
+	onSettingsChanged();
 
 	/* Changing speed mid-playback is the whole point of the panel, so apply it right away. */
 	PlaybackEngine::instance().set_speed(percent / 100.0);
