@@ -18,6 +18,8 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 
 #include "replay-dock.hpp"
 
+#include "core/program-capture.hpp"
+
 #include <obs-module.h>
 #include <plugin-support.h>
 
@@ -34,6 +36,8 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #include <QPushButton>
 #include <QTimer>
 #include <QVBoxLayout>
+
+#include <algorithm>
 
 namespace {
 
@@ -232,5 +236,41 @@ void ReplayDock::onSpeedChanged(int percent)
 
 void ReplayDock::refreshStatus()
 {
-	/* Placeholder until the capture engine lands in M1: keeps the timer path exercised. */
+	ProgramCapture::instance().poll_video_settings();
+
+	const CaptureStatus status = ProgramCapture::instance().status();
+
+	if (!status.running) {
+		buffer_bar->setValue(0);
+		buffer_label->setText(QStringLiteral("—"));
+		format_label->setText(status.error.empty() ? obs_module_text("Replay.Status.NoBuffer")
+							   : QString::fromStdString(status.error));
+		return;
+	}
+
+	const double capacity = status.capacity_sec > 0.0 ? status.capacity_sec : 1.0;
+	const double filled = std::min(status.buffered_sec, capacity);
+	buffer_bar->setValue(static_cast<int>(filled / capacity * 1000.0));
+	buffer_label->setText(QStringLiteral("%1 / %2 s").arg(filled, 0, 'f', 1).arg(capacity, 0, 'f', 1));
+
+	QString details = QStringLiteral("%1×%2 @ %3   %4 GB   %5")
+				  .arg(status.width)
+				  .arg(status.height)
+				  .arg(status.fps, 0, 'f', 0)
+				  .arg(static_cast<double>(status.bytes) / (1024.0 * 1024.0 * 1024.0), 0, 'f', 2)
+				  .arg(status.paused ? obs_module_text("Replay.Status.Paused")
+						     : obs_module_text("Replay.Status.Recording"));
+
+	/* Copy cost matters: anything slow here shows up as encoder lag during the broadcast. */
+	details += QStringLiteral("   %1 %2/%3 ms")
+			   .arg(obs_module_text("Replay.Status.Copy"))
+			   .arg(status.copy_ms_avg, 0, 'f', 2)
+			   .arg(status.copy_ms_max, 0, 'f', 2);
+
+	if (status.slow_frames > 0)
+		details += QStringLiteral("   ⚠ %1: %2")
+				   .arg(obs_module_text("Replay.Status.SlowFrames"))
+				   .arg(status.slow_frames);
+
+	format_label->setText(details);
 }

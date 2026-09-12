@@ -22,6 +22,7 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 
 #include <QMainWindow>
 
+#include "core/program-capture.hpp"
 #include "ui/replay-dock.hpp"
 
 OBS_DECLARE_MODULE()
@@ -35,6 +36,40 @@ OBS_MODULE_USE_DEFAULT_LOCALE(PLUGIN_NAME, "en-US")
 static constexpr const char *kDockId = "trinity.instant-replay.dock";
 
 static ReplayDock *dock_widget = nullptr;
+
+static void start_capture()
+{
+	CaptureSettings settings;
+	settings.duration_sec = 10.0;
+	settings.frame_rate_divisor = 1;
+	settings.max_bytes = 0; /* derived from free physical memory */
+
+	if (!ProgramCapture::instance().start(settings))
+		obs_log(LOG_WARNING, "replay buffer is not running");
+}
+
+static void on_frontend_event(enum obs_frontend_event event, void *)
+{
+	switch (event) {
+	case OBS_FRONTEND_EVENT_FINISHED_LOADING:
+		/* Video output exists only once the frontend has finished starting up. */
+		start_capture();
+		break;
+	case OBS_FRONTEND_EVENT_PROFILE_CHANGED:
+		/* A profile switch can change resolution, frame rate and colour format. */
+		if (ProgramCapture::instance().running()) {
+			ProgramCapture::instance().stop();
+			start_capture();
+		}
+		break;
+	case OBS_FRONTEND_EVENT_EXIT:
+		/* Drop the raw callback before libobs starts tearing the video pipeline down. */
+		ProgramCapture::instance().stop();
+		break;
+	default:
+		break;
+	}
+}
 
 bool obs_module_load(void)
 {
@@ -58,12 +93,17 @@ bool obs_module_load(void)
 		return false;
 	}
 
+	obs_frontend_add_event_callback(on_frontend_event, nullptr);
+
 	obs_log(LOG_INFO, "plugin loaded successfully (version %s)", PLUGIN_VERSION);
 	return true;
 }
 
 void obs_module_unload(void)
 {
+	obs_frontend_remove_event_callback(on_frontend_event, nullptr);
+	ProgramCapture::instance().stop();
+
 	if (dock_widget) {
 		/* OBS owns the dock widget after add_dock_by_id, so only ask it to drop it. */
 		obs_frontend_remove_dock(kDockId);
