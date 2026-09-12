@@ -35,10 +35,7 @@ if(ENABLE_QT)
 endif()
 
 # Headers carrying Q_OBJECT must be listed here as well, otherwise AUTOMOC skips them.
-target_sources(
-  ${CMAKE_PROJECT_NAME}
-  PRIVATE src/plugin-main.cpp src/ui/replay-dock.cpp src/ui/replay-dock.hpp
-)
+target_sources(${CMAKE_PROJECT_NAME} PRIVATE src/plugin-main.cpp src/ui/replay-dock.cpp src/ui/replay-dock.hpp)
 
 target_include_directories(${CMAKE_PROJECT_NAME} PRIVATE src)
 

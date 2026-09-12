@@ -211,8 +211,7 @@ QWidget *ReplayDock::buildTransportRow()
 void ReplayDock::onMark()
 {
 	/* M3 wires this to the ring buffer; for now it only proves the UI plumbing works. */
-	obs_log(LOG_INFO, "MARK requested (length %.1f s, offset %.1f s)", length_spin->value(),
-		offset_spin->value());
+	obs_log(LOG_INFO, "MARK requested (length %.1f s, offset %.1f s)", length_spin->value(), offset_spin->value());
 }
 
 void ReplayDock::onPlay()
