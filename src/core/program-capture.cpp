@@ -18,6 +18,8 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 
 #include "program-capture.hpp"
 
+#include "playback-engine.hpp"
+
 #include <plugin-support.h>
 #include <util/platform.h>
 
@@ -166,7 +168,13 @@ bool ProgramCapture::start(const CaptureSettings &settings)
 	config.duration_sec = settings.duration_sec;
 	config.max_bytes = settings.max_bytes ? settings.max_bytes : default_memory_budget();
 
-	if (!ring_.reconfigure(config)) {
+	bool allocated;
+	{
+		std::unique_lock<std::shared_mutex> teardown_lock(teardown_);
+		allocated = ring_.reconfigure(config);
+	}
+
+	if (!allocated) {
 		error_ = "not enough memory for the requested buffer";
 		obs_log(LOG_ERROR, "capture: %s (%.1f s at %ux%u %s)", error_.c_str(), config.duration_sec,
 			config.width, config.height, format_name(config.format));
@@ -221,7 +229,12 @@ void ProgramCapture::stop()
 	/* Remove the callback before releasing the ring it writes into. */
 	obs_remove_raw_video_callback(raw_video_callback, this);
 	running_.store(false, std::memory_order_release);
-	ring_.release();
+
+	{
+		/* Wait for the graphics thread to finish with any frame it is currently reading. */
+		std::unique_lock<std::shared_mutex> teardown_lock(teardown_);
+		ring_.release();
+	}
 
 	obs_log(LOG_INFO, "capture stopped");
 }

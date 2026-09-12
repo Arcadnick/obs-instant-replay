@@ -68,8 +68,15 @@ obs_source_t *ReplayDirector::ensure_replay_scene()
 	/* The scene lives in the user's scene collection, so it may already be there from last time. */
 	obs_source_t *found = obs_get_source_by_name(kReplaySceneName);
 	if (found) {
-		replay_scene_ = obs_source_get_weak_source(found);
-		return found;
+		if (obs_source_get_type(found) == OBS_SOURCE_TYPE_SCENE) {
+			replay_scene_ = obs_source_get_weak_source(found);
+			return found;
+		}
+
+		/* Something else already owns the name; do not hijack the user's source. */
+		obs_log(LOG_ERROR, "'%s' exists but is not a scene", kReplaySceneName);
+		obs_source_release(found);
+		return nullptr;
 	}
 
 	obs_scene_t *scene = obs_scene_create(kReplaySceneName);

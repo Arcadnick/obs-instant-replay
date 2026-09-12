@@ -51,6 +51,8 @@ target_sources(
     src/plugin-main.cpp
     src/ui/replay-dock.cpp
     src/ui/replay-dock.hpp
+    src/ui/replay-timeline.cpp
+    src/ui/replay-timeline.hpp
 )
 
 target_include_directories(${CMAKE_PROJECT_NAME} PRIVATE src)

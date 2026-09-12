@@ -18,6 +18,8 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 
 #include "replay-dock.hpp"
 
+#include "replay-timeline.hpp"
+
 #include "core/playback-engine.hpp"
 #include "core/program-capture.hpp"
 #include "core/replay-director.hpp"
@@ -40,6 +42,12 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #include <QProgressBar>
 #include <QPushButton>
 #include <QTimer>
+#include <QAction>
+#include <QInputDialog>
+#include <QKeySequence>
+#include <QLineEdit>
+#include <QMenu>
+#include <QShortcut>
 #include <QTime>
 #include <QVBoxLayout>
 
@@ -74,10 +82,20 @@ ReplayDock::ReplayDock(QWidget *parent) : QWidget(parent)
 	layout->addWidget(buildStatusRow());
 	layout->addWidget(buildCaptureRow());
 	layout->addWidget(buildSpeedRow());
+	layout->addWidget(buildTimelineRow());
 	layout->addWidget(buildEventsBox(), 1);
 	layout->addWidget(buildTransportRow());
 
 	setMinimumWidth(320);
+
+	/* Keyboard shortcuts inside the panel; the global hotkeys are registered separately. */
+	auto *rename_shortcut = new QShortcut(QKeySequence(Qt::Key_F2), this);
+	rename_shortcut->setContext(Qt::WidgetWithChildrenShortcut);
+	connect(rename_shortcut, &QShortcut::activated, this, &ReplayDock::renameSelectedEvent);
+
+	auto *delete_shortcut = new QShortcut(QKeySequence(Qt::Key_Delete), this);
+	delete_shortcut->setContext(Qt::WidgetWithChildrenShortcut);
+	connect(delete_shortcut, &QShortcut::activated, this, &ReplayDock::deleteSelectedEvent);
 
 	registerHotkeys();
 
@@ -272,6 +290,24 @@ QWidget *ReplayDock::buildSpeedRow()
 	return box;
 }
 
+QWidget *ReplayDock::buildTimelineRow()
+{
+	auto *box = new QWidget(this);
+	auto *layout = new QVBoxLayout(box);
+	layout->setContentsMargins(0, 0, 0, 0);
+	layout->setSpacing(2);
+
+	timeline = new ReplayTimeline(box);
+	connect(timeline, &ReplayTimeline::selectionChanged, this, &ReplayDock::onTimelineChanged);
+
+	timeline_label = new QLabel(obs_module_text("Replay.Timeline.Empty"), box);
+	timeline_label->setEnabled(false);
+
+	layout->addWidget(timeline);
+	layout->addWidget(timeline_label);
+	return box;
+}
+
 QWidget *ReplayDock::buildEventsBox()
 {
 	auto *box = new QGroupBox(obs_module_text("Replay.Events"), this);
@@ -281,6 +317,9 @@ QWidget *ReplayDock::buildEventsBox()
 	events_list = new QListWidget(box);
 	events_list->setAlternatingRowColors(true);
 	connect(events_list, &QListWidget::itemDoubleClicked, this, &ReplayDock::onEventActivated);
+	connect(events_list, &QListWidget::currentRowChanged, this, &ReplayDock::onEventSelected);
+	events_list->setContextMenuPolicy(Qt::CustomContextMenu);
+	connect(events_list, &QListWidget::customContextMenuRequested, this, &ReplayDock::onEventsContextMenu);
 	layout->addWidget(events_list);
 
 	auto *hint = new QLabel(obs_module_text("Replay.Events.Hint"), box);
@@ -326,19 +365,153 @@ void ReplayDock::onMark()
 		return;
 	}
 
-	events.push_back(clip);
+	Event event;
+	event.clip = clip;
+	event.name = QStringLiteral("%1 %2").arg(obs_module_text("Replay.Event")).arg(events.size() + 1);
+	events.push_back(event);
 
-	auto *item = new QListWidgetItem(QStringLiteral("%1 %2   %3   %4 s")
-						 .arg(obs_module_text("Replay.Event"))
-						 .arg(events.size())
-						 .arg(QTime::currentTime().toString(QStringLiteral("HH:mm:ss")))
-						 .arg(clip.duration_sec(), 0, 'f', 1));
+	auto *item = new QListWidgetItem();
 	item->setData(Qt::UserRole, static_cast<int>(events.size()) - 1);
 	events_list->addItem(item);
+	updateEventItem(static_cast<int>(events.size()) - 1);
 	events_list->setCurrentItem(item);
+	showSelection(static_cast<int>(events.size()) - 1);
 
 	obs_log(LOG_INFO, "marked clip %.1f s (%llu frames)", clip.duration_sec(),
 		static_cast<unsigned long long>(clip.seq_out - clip.seq_in));
+}
+
+void ReplayDock::updateEventItem(int event_index)
+{
+	if (event_index < 0 || event_index >= static_cast<int>(events.size()))
+		return;
+
+	for (int row = 0; row < events_list->count(); ++row) {
+		QListWidgetItem *item = events_list->item(row);
+		if (item->data(Qt::UserRole).toInt() != event_index)
+			continue;
+
+		const Event &event = events[static_cast<size_t>(event_index)];
+		item->setText(QStringLiteral("%1   %2 s").arg(event.name).arg(event.clip.duration_sec(), 0, 'f', 1));
+		return;
+	}
+}
+
+void ReplayDock::showSelection(int event_index)
+{
+	if (event_index < 0 || event_index >= static_cast<int>(events.size())) {
+		timeline->clearSelection();
+		timeline_label->setText(obs_module_text("Replay.Timeline.Empty"));
+		return;
+	}
+
+	uint64_t live = 0;
+	if (!PlaybackEngine::live_timestamp(live))
+		return;
+
+	const Clip &clip = events[static_cast<size_t>(event_index)].clip;
+	/* The timeline axis is "seconds before the live edge", so the clip drifts left as it ages. */
+	const double in_sec = live > clip.ts_in ? static_cast<double>(live - clip.ts_in) / 1e9 : 0.0;
+	const double out_sec = live > clip.ts_out ? static_cast<double>(live - clip.ts_out) / 1e9 : 0.0;
+	timeline->setSelection(in_sec, out_sec);
+
+	timeline_label->setText(QStringLiteral("IN -%1 s   OUT -%2 s   %3 %4 s")
+					.arg(in_sec, 0, 'f', 1)
+					.arg(out_sec, 0, 'f', 1)
+					.arg(obs_module_text("Replay.Timeline.Duration"))
+					.arg(clip.duration_sec(), 0, 'f', 1));
+}
+
+void ReplayDock::rebuildEventList()
+{
+	events_list->clear();
+	for (size_t index = 0; index < events.size(); ++index) {
+		auto *item = new QListWidgetItem();
+		item->setData(Qt::UserRole, static_cast<int>(index));
+		events_list->addItem(item);
+		updateEventItem(static_cast<int>(index));
+	}
+}
+
+void ReplayDock::onEventsContextMenu(const QPoint &position)
+{
+	if (selectedEvent() < 0)
+		return;
+
+	QMenu menu(this);
+	QAction *rename = menu.addAction(obs_module_text("Replay.Event.Rename"));
+	QAction *remove = menu.addAction(obs_module_text("Replay.Event.Delete"));
+
+	const QAction *chosen = menu.exec(events_list->mapToGlobal(position));
+	if (chosen == rename)
+		renameSelectedEvent();
+	else if (chosen == remove)
+		deleteSelectedEvent();
+}
+
+void ReplayDock::renameSelectedEvent()
+{
+	const int index = selectedEvent();
+	if (index < 0 || index >= static_cast<int>(events.size()))
+		return;
+
+	bool accepted = false;
+	const QString name = QInputDialog::getText(this, obs_module_text("Replay.Event.Rename"),
+						   obs_module_text("Replay.Event.Name"), QLineEdit::Normal,
+						   events[static_cast<size_t>(index)].name, &accepted);
+	if (!accepted || name.isEmpty())
+		return;
+
+	events[static_cast<size_t>(index)].name = name;
+	updateEventItem(index);
+}
+
+void ReplayDock::deleteSelectedEvent()
+{
+	const int index = selectedEvent();
+	if (index < 0 || index >= static_cast<int>(events.size()))
+		return;
+
+	events.erase(events.begin() + index);
+
+	/* Item payloads are plain indices, so the whole list is rebuilt after a removal. */
+	rebuildEventList();
+	showSelection(selectedEvent());
+}
+
+void ReplayDock::onEventSelected()
+{
+	showSelection(selectedEvent());
+}
+
+void ReplayDock::onTimelineChanged(double in_sec, double out_sec)
+{
+	const int index = selectedEvent();
+	if (index < 0 || index >= static_cast<int>(events.size()))
+		return;
+
+	uint64_t live = 0;
+	if (!PlaybackEngine::live_timestamp(live))
+		return;
+
+	const uint64_t ts_in = live - static_cast<uint64_t>(in_sec * 1e9);
+	const uint64_t ts_out = live - static_cast<uint64_t>(out_sec * 1e9);
+
+	Clip trimmed;
+	std::string error;
+	if (!PlaybackEngine::instance().clip_from_timestamps(ts_in, ts_out, trimmed, error)) {
+		timeline_label->setText(QString::fromStdString(error));
+		return;
+	}
+
+	events[static_cast<size_t>(index)].clip = trimmed;
+	updateEventItem(index);
+
+	timeline_label->setText(QStringLiteral("IN -%1 s   OUT -%2 s   %3 %4 s")
+					.arg(in_sec, 0, 'f', 1)
+					.arg(out_sec, 0, 'f', 1)
+					.arg(obs_module_text("Replay.Timeline.Duration"))
+					.arg(trimmed.duration_sec(), 0, 'f', 1));
 }
 
 int ReplayDock::selectedEvent() const
@@ -355,8 +528,8 @@ bool ReplayDock::play(int event_index)
 	if (event_index < 0 || event_index >= static_cast<int>(events.size()))
 		return false;
 
-	if (!ReplayDirector::instance().play_to_program(events[static_cast<size_t>(event_index)], speed_percent / 100.0,
-							auto_return_check->isChecked())) {
+	if (!ReplayDirector::instance().play_to_program(events[static_cast<size_t>(event_index)].clip,
+							speed_percent / 100.0, auto_return_check->isChecked())) {
 		obs_log(LOG_WARNING, "PLAY failed: clip is no longer valid");
 		return false;
 	}
@@ -443,6 +616,9 @@ void ReplayDock::refreshStatus()
 			   .arg(obs_module_text("Replay.Status.Copy"))
 			   .arg(status.copy_ms_avg, 0, 'f', 2)
 			   .arg(status.copy_ms_max, 0, 'f', 2);
+
+	timeline->setBuffer(capacity, filled);
+	timeline->setPlayhead(replaying ? playback.position_sec() : -1.0);
 
 	if (replaying) {
 		const Clip clip = playback.clip();

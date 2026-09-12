@@ -90,6 +90,9 @@ void replay_source_video_tick(void *data, float)
 {
 	auto *context = static_cast<ReplaySource *>(data);
 
+	/* Keeps the ring alive for as long as we hold pointers into it. */
+	const auto ring_guard = ProgramCapture::instance().reader_guard();
+
 	const FramePick pick = PlaybackEngine::instance().next_frame();
 	if (!pick.has_frame)
 		return;

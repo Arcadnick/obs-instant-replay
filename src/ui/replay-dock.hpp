@@ -35,6 +35,7 @@ class QListWidget;
 class QProgressBar;
 class QPushButton;
 class QTimer;
+class ReplayTimeline;
 
 /*
  * Operator panel. Every widget here lives on the Qt thread only: the capture/playback core
@@ -57,12 +58,18 @@ public slots:
 private slots:
 	void onSpeedChanged(int speed_percent);
 	void onEventActivated();
+	void onEventSelected();
+	void onTimelineChanged(double in_sec, double out_sec);
+	void onEventsContextMenu(const QPoint &position);
+	void renameSelectedEvent();
+	void deleteSelectedEvent();
 	void refreshStatus();
 
 private:
 	QWidget *buildStatusRow();
 	QWidget *buildCaptureRow();
 	QWidget *buildSpeedRow();
+	QWidget *buildTimelineRow();
 	QWidget *buildEventsBox();
 	QWidget *buildTransportRow();
 
@@ -83,15 +90,25 @@ private:
 	QPushButton *stop_button = nullptr;
 	QCheckBox *auto_return_check = nullptr;
 	QListWidget *events_list = nullptr;
+	ReplayTimeline *timeline = nullptr;
+	QLabel *timeline_label = nullptr;
 
 	QTimer *status_timer = nullptr;
 
+	struct Event {
+		Clip clip;
+		QString name;
+	};
+
 	/* Marked clips, in the order they were created; the list widget stores indices into this. */
-	std::vector<Clip> events;
+	std::vector<Event> events;
 	int speed_percent = 100;
 
 	bool play(int event_index);
 	int selectedEvent() const;
+	void rebuildEventList();
+	void updateEventItem(int event_index);
+	void showSelection(int event_index);
 
 	void registerHotkeys();
 	void unregisterHotkeys();

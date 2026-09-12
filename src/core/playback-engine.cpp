@@ -106,6 +106,63 @@ bool PlaybackEngine::mark(double length_sec, double trim_sec, Clip &clip, std::s
 	return true;
 }
 
+bool PlaybackEngine::clip_from_timestamps(uint64_t ts_in, uint64_t ts_out, Clip &clip, std::string &error) const
+{
+	ProgramCapture &capture = ProgramCapture::instance();
+	if (!capture.running()) {
+		error = "buffer is not running";
+		return false;
+	}
+
+	if (ts_out <= ts_in) {
+		error = "out point is before the in point";
+		return false;
+	}
+
+	const FrameRing &ring = capture.ring();
+	const uint64_t head = ring.head();
+	if (head == 0) {
+		error = "buffer is empty";
+		return false;
+	}
+
+	const uint64_t oldest = std::max(ring.oldest(), ring.gap_seq());
+
+	Clip built;
+	if (!ring.find_by_timestamp(ts_in, oldest, head - 1, built.seq_in) ||
+	    !ring.find_by_timestamp(ts_out, oldest, head - 1, built.seq_out)) {
+		error = "requested range is no longer buffered";
+		return false;
+	}
+
+	if (built.seq_out <= built.seq_in + 1) {
+		error = "range is too short";
+		return false;
+	}
+
+	if (!ring.timestamp_at(built.seq_in, built.ts_in) || !ring.timestamp_at(built.seq_out, built.ts_out)) {
+		error = "footage was overwritten while trimming";
+		return false;
+	}
+
+	clip = built;
+	return true;
+}
+
+bool PlaybackEngine::live_timestamp(uint64_t &timestamp)
+{
+	ProgramCapture &capture = ProgramCapture::instance();
+	if (!capture.running())
+		return false;
+
+	const FrameRing &ring = capture.ring();
+	const uint64_t head = ring.head();
+	if (head == 0)
+		return false;
+
+	return ring.timestamp_at(head - 1, timestamp);
+}
+
 bool PlaybackEngine::play(const Clip &clip, double speed)
 {
 	if (!clip.valid())

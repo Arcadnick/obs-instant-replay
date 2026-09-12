@@ -59,6 +59,7 @@ static void on_frontend_event(enum obs_frontend_event event, void *)
 		break;
 	case OBS_FRONTEND_EVENT_PROFILE_CHANGED:
 		/* A profile switch can change resolution, frame rate and colour format. */
+		ReplayDirector::instance().reset();
 		if (ProgramCapture::instance().running()) {
 			ProgramCapture::instance().stop();
 			start_capture();

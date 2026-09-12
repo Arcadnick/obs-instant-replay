@@ -57,6 +57,12 @@ public:
 	/* Builds a clip ending `trim_sec` before the live edge. UI thread. */
 	bool mark(double length_sec, double trim_sec, Clip &clip, std::string &error) const;
 
+	/* Rebuilds a clip from edited in/out timestamps (timeline dragging). UI thread. */
+	bool clip_from_timestamps(uint64_t ts_in, uint64_t ts_out, Clip &clip, std::string &error) const;
+
+	/* Timestamp of the newest buffered frame, i.e. the live edge. Returns false if empty. */
+	static bool live_timestamp(uint64_t &timestamp);
+
 	bool play(const Clip &clip, double speed);
 	void stop();
 	void set_speed(double speed);

@@ -24,6 +24,8 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 
 #include <atomic>
 #include <cstdint>
+#include <mutex>
+#include <shared_mutex>
 #include <string>
 
 struct CaptureSettings {
@@ -81,6 +83,13 @@ public:
 
 	CaptureStatus status() const;
 	FrameRing &ring() { return ring_; }
+
+	/*
+	 * Held by the graphics thread while it reads frames out of the ring and hands the pointers to
+	 * libobs. Tearing the ring down takes the same lock exclusively, so a profile switch or a
+	 * shutdown cannot free memory a replay is still reading.
+	 */
+	std::shared_lock<std::shared_mutex> reader_guard() { return std::shared_lock<std::shared_mutex>(teardown_); }
 	const CaptureSettings &settings() const { return settings_; }
 
 	/* Bytes of physical memory the ring is allowed to take when max_bytes is left at 0. */
@@ -93,6 +102,7 @@ private:
 	void on_frame(video_data *frame);
 
 	FrameRing ring_;
+	mutable std::shared_mutex teardown_;
 	CaptureSettings settings_;
 	std::string error_;
 
